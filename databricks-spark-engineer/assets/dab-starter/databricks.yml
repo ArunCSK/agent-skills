@@ -1,0 +1,23 @@
+bundle:
+  name: my_spark_job
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: ${DATABRICKS_HOST}
+
+resources:
+  jobs:
+    main_job:
+      name: "[${bundle.target}] My Spark Job"
+      tasks:
+        - task_key: main_task
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "Standard_DS3_v2"
+            num_workers: 1
+            custom_tags:
+              ResourceClass: SingleNode
+          spark_python_task:
+            python_file: src/main.py
