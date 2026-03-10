@@ -31,6 +31,7 @@ function App() {
   const [isDevMode, setIsDevMode] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState<any[] | null>(null);
+  const [executionSummary, setExecutionSummary] = useState<{ time: string, evaluated: number, passed: number, failed: number } | null>(null);
   const [activeTab, setActiveTab] = useState<'editor' | 'results'>('editor');
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
@@ -51,13 +52,26 @@ function App() {
 
   const handleValidate = () => {
     setIsRunning(true);
-    // Simulate Drools API call and processing time
+    // Simulate Databricks API call: 
+    // - Submits sql query to databricks notebook
+    // - Notebook validates sql query and creates drools format .drl.excel file
+    // - Returns output dataframe
+    const startTime = performance.now();
+
     setTimeout(() => {
-      setResults(generateMockData());
+      const execTime = performance.now() - startTime;
+      const formattedTime = (execTime / 1000).toFixed(2);
+
+      const data = generateMockData();
+      const passed = data.filter(d => d.status === 'VALID').length;
+      const failed = data.filter(d => d.status === 'INVALID').length;
+
+      setResults(data);
+      setExecutionSummary({ time: formattedTime, evaluated: 10, passed, failed });
       setIsRunning(false);
       setActiveTab('results');
-      displayToast('Validation complete. Evaluated 10 records.');
-    }, 1200);
+      displayToast(`Validation complete in ${formattedTime}s. .drl.excel Drools file generated.`);
+    }, 1500 + Math.random() * 800);
   };
 
   const handleOpenSaveModal = () => {
@@ -196,8 +210,27 @@ function App() {
                 </div>
               ) : (
                 <>
+                  <div className="summary-cards" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Execution Time</span>
+                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{executionSummary?.time} s</span>
+                    </div>
+                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Records Evaluated</span>
+                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{executionSummary?.evaluated}</span>
+                    </div>
+                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.3)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--accent-success)' }}>Validation Passed</span>
+                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--accent-success)' }}>{executionSummary?.passed}</span>
+                    </div>
+                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.3)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--accent-danger)' }}>Validation Failed</span>
+                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--accent-danger)' }}>{executionSummary?.failed}</span>
+                    </div>
+                  </div>
+
                   <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                    Showing 10 analyzed records across 5 columns based on Drools processing.
+                    Drools execution output for 10 limit rows against target table 5 column data.
                   </p>
                   <div className="table-container">
                     <table>
