@@ -1,21 +1,41 @@
 import { useState } from 'react';
 import {
-  Database,
-  Play,
-  Save,
-  Settings,
-  CheckCircle,
-  AlertCircle,
-  FileSpreadsheet,
-  CloudLightning,
-  RefreshCw,
-  Fingerprint
-} from 'lucide-react';
-import * as XLSX from 'xlsx';
+  Button,
+  Card,
+  Text,
+  Switch,
+  Input,
+  FormField,
+  FormFieldLabel,
+  Dialog,
+  DialogHeader,
+  DialogContent,
+  DialogActions,
+  StackLayout,
+  FlexLayout,
+  GridLayout,
+  Spinner,
+  MultilineInput,
+  Badge
+} from '@salt-ds/core';
+
+import {
+  DatabaseIcon,
+  PlayIcon,
+  PlaySolidIcon,
+  SaveIcon,
+  SettingsIcon,
+  ExportIcon,
+  SearchIcon,
+  SuccessSolidIcon,
+  ErrorSolidIcon,
+  DocumentIcon
+} from '@salt-ds/icons';
+
 import { saveAs } from 'file-saver';
 import './index.css';
 
-// Mock Data for Table (10 rows, 5 columns: ID, ProductName, Category, Price, Status)
+// Mock Data for Table
 const generateMockData = () => {
   return Array.from({ length: 10 }).map((_, idx) => ({
     id: `PRD-${1000 + idx}`,
@@ -26,15 +46,28 @@ const generateMockData = () => {
   }));
 };
 
+type SavedRule = {
+  id: string;
+  ruleGroupName: string;
+  ruleName: string;
+  targetTableName: string;
+  targetKeyColumns: string;
+  query: string;
+  status: 'Pending' | 'Enabled';
+};
+
 function App() {
   const [query, setQuery] = useState(`SELECT \n  product_id, \n  product_name, \n  category, \n  price\nFROM \n  sales_catalog.delta_table \nWHERE \n  price > 0 \n  AND category IS NOT NULL`);
   const [isDevMode, setIsDevMode] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState<any[] | null>(null);
   const [executionSummary, setExecutionSummary] = useState<{ time: string, evaluated: number, passed: number, failed: number } | null>(null);
-  const [activeTab, setActiveTab] = useState<'editor' | 'results'>('editor');
+
+  const [activeTab, setActiveTab] = useState<'editor' | 'results' | 'rules'>('editor');
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+
+  const [savedRules, setSavedRules] = useState<SavedRule[]>([]);
 
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [ruleFormData, setRuleFormData] = useState({
@@ -52,10 +85,6 @@ function App() {
 
   const handleValidate = () => {
     setIsRunning(true);
-    // Simulate Databricks API call: 
-    // - Submits sql query to databricks notebook
-    // - Notebook validates sql query and creates drools format .drl.excel file
-    // - Returns output dataframe
     const startTime = performance.now();
 
     setTimeout(() => {
@@ -70,12 +99,11 @@ function App() {
       setExecutionSummary({ time: formattedTime, evaluated: 10, passed, failed });
       setIsRunning(false);
       setActiveTab('results');
-      displayToast(`Validation complete in ${formattedTime}s. .drl.excel Drools file generated.`);
+      displayToast(`Validation complete in ${formattedTime}s.`);
     }, 1500 + Math.random() * 800);
   };
 
   const handleOpenSaveModal = () => {
-    if (!isDevMode) return;
     setShowSaveModal(true);
   };
 
@@ -84,156 +112,172 @@ function App() {
     setRuleFormData({ ruleGroupName: '', ruleName: '', targetTableName: '', targetKeyColumns: '' });
   };
 
-  const handleSaveModalSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveModalSubmit = () => {
+    const newRule: SavedRule = {
+      id: `rule-${Date.now()}`,
+      ...ruleFormData,
+      query,
+      status: 'Pending'
+    };
 
-    // Convert logic to Excel
-    const worksheet = XLSX.utils.json_to_sheet([
-      {
-        "Rule Type": "SQL Query",
-        "Rule Group": ruleFormData.ruleGroupName,
-        "Rule Name": ruleFormData.ruleName,
-        "Target Table": ruleFormData.targetTableName,
-        "Keys": ruleFormData.targetKeyColumns,
-        "Logic": query
-      },
-      { "Rule Type": "BDQ validation", "Logic": "Run via Drools Engine" }
-    ]);
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Business Rules");
-
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const data = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-
-    // Simulate S3 Download Link
-    saveAs(data, `${ruleFormData.ruleName || 'BDQ_Rules'}_Export.xlsx`);
-    displayToast(`Rule '${ruleFormData.ruleName}' saved to Master Table & exported.`);
+    setSavedRules([...savedRules, newRule]);
+    displayToast(`Rule '${ruleFormData.ruleName}' saved successfully as Pending.`);
     handleCloseSaveModal();
+    setActiveTab('rules');
   };
 
+  const generateJobsYml = (rule: SavedRule) => {
+    const safeName = rule.ruleName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const ymlContent = `# Databricks Asset Bundle / Jobs configuration
+resources:
+  jobs:
+    ${safeName}_bdq_job:
+      name: "${rule.ruleName} Business Data Quality"
+      tasks:
+        - task_key: "run_drools_validation"
+          notebook_task:
+            notebook_path: "/Workspace/BDQ/validation_engine"
+            base_parameters:
+              rule_group: "${rule.ruleGroupName}"
+              target_table: "${rule.targetTableName}"
+              query_logic: "${rule.query.replace(/\n/g, ' ')}"
+`;
+    const data = new Blob([ymlContent], { type: "text/yaml" });
+    saveAs(data, `${safeName}_job.yml`);
+  };
+
+  const handleEnableRuleAndAttach = (id: string) => {
+    setSavedRules(rules => rules.map(r => {
+      if (r.id === id) {
+        generateJobsYml(r);
+        return { ...r, status: 'Enabled' };
+      }
+      return r;
+    }));
+    displayToast('Rule Enabled successfully! Databricks jobs.yml generated.');
+  };
+
+  const pendingCount = savedRules.filter(r => r.status === 'Pending').length;
+
   return (
-    <div className="app-container">
-      <header className="header">
-        <div className="header-title-container">
-          <CloudLightning size={28} className="header-icon" />
-          <h1 className="header-title">Data Controls</h1>
-        </div>
+    <StackLayout gap={3} className="app-container">
+      {/* Header */}
+      <Card variant="secondary" className="header-card">
+        <FlexLayout justify="space-between" align="center">
+          <FlexLayout align="center" gap={1}>
+            <Text styleAs="h2" color="primary"><strong>JPMorganChase</strong> | Data Control</Text>
+          </FlexLayout>
 
-        <div className="dev-mode-toggle">
-          <Settings size={18} />
-          <span>Developer Enablement</span>
-          <label className="switch" title="Toggle Developer Mode to enable Saving Rules">
-            <input
-              type="checkbox"
-              checked={isDevMode}
-              onChange={() => setIsDevMode(!isDevMode)}
-            />
-            <span className="slider"></span>
-          </label>
-        </div>
-      </header>
+          <FlexLayout align="center" gap={1}>
+            <SettingsIcon />
+            <Text styleAs="label">Developer Enablement</Text>
+            <Switch checked={isDevMode} onChange={(e: any) => setIsDevMode(e.target.checked)} title="Toggle Developer Mode" />
+          </FlexLayout>
+        </FlexLayout>
+      </Card>
 
-      <main className="main-content">
-        <div className="card">
-          <div className="tabs">
-            <button
-              className={`tab ${activeTab === 'editor' ? 'active' : ''}`}
-              onClick={() => setActiveTab('editor')}
-            >
+      {/* Main content */}
+      <Card>
+        <FlexLayout direction="column" gap={3}>
+          <FlexLayout gap={1} align="center">
+            <Button appearance="transparent" sentiment={activeTab === 'editor' ? 'accented' : 'neutral'} onClick={() => setActiveTab('editor')}>
               SQL Editor
-            </button>
-            <button
-              className={`tab ${activeTab === 'results' ? 'active' : ''}`}
-              onClick={() => setActiveTab('results')}
-            >
+            </Button>
+            <Button appearance="transparent" sentiment={activeTab === 'results' ? 'accented' : 'neutral'} onClick={() => setActiveTab('results')}>
               Validation Results {results && `(${results.length})`}
-            </button>
-          </div>
+            </Button>
+            <Button appearance="transparent" sentiment={activeTab === 'rules' ? 'accented' : 'neutral'} onClick={() => setActiveTab('rules')} style={{ position: 'relative' }}>
+              Rules Configuration
+              {pendingCount > 0 && (
+                <Badge value={pendingCount} color="red" style={{ position: 'absolute', top: -5, right: -15 }} />
+              )}
+            </Button>
+          </FlexLayout>
 
-          {activeTab === 'editor' ? (
-            <div className="tab-content" style={{ animation: 'fade-in 0.3s ease-out' }}>
-              <div className="card-title">
-                <Database size={20} />
-                Databricks Delta Source Validation
-              </div>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1rem', marginTop: '-0.5rem' }}>
+          {activeTab === 'editor' && (
+            <StackLayout gap={2}>
+              <FlexLayout align="center" gap={1}>
+                <DatabaseIcon />
+                <Text styleAs="h3">Databricks Delta Source Validation</Text>
+              </FlexLayout>
+              <Text color="secondary" styleAs="label">
                 Write your SQL formulation. On validation, this query is processed via Drools BDQ engine against 10 target records.
-              </p>
+              </Text>
 
-              <textarea
-                className="code-editor"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                spellCheck={false}
-              />
+              <FormField>
+                <div className="code-editor-container">
+                  <MultilineInput
+                    value={query}
+                    onChange={(e: any) => setQuery(e.target.value)}
+                    style={{ minHeight: 200, fontFamily: 'monospace' }}
+                  />
+                </div>
+              </FormField>
 
-              <div className="actions-row">
-                <button
-                  className={`btn btn-secondary ${!isDevMode ? 'disabled' : ''}`}
-                  onClick={handleOpenSaveModal}
-                  disabled={!isDevMode}
-                  title={!isDevMode ? "Enable Dev Mode to Save" : "Save and Export to S3/Excel"}
-                >
-                  <Save size={18} />
-                  Save Rules
-                </button>
+              <FlexLayout justify="end" gap={1}>
+                <Button appearance="bordered" sentiment="neutral" onClick={handleOpenSaveModal}>
+                  <SaveIcon />
+                  Save Rule
+                </Button>
+                <Button appearance="solid" sentiment="accented" onClick={handleValidate} disabled={isRunning || !query.trim()}>
+                  {isRunning ? <Spinner size="small" /> : <PlayIcon />}
+                  Validate & Run
+                </Button>
+              </FlexLayout>
+            </StackLayout>
+          )}
 
-                <button
-                  className="btn btn-primary"
-                  onClick={handleValidate}
-                  disabled={isRunning || !query.trim()}
-                >
-                  {isRunning ? (
-                    <><RefreshCw size={18} className="spinner" /> Validating BDQ...</>
-                  ) : (
-                    <><Play size={18} /> Validate & Run</>
-                  )}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="tab-content" style={{ animation: 'fade-in 0.3s ease-out' }}>
-              <div className="card-title">
-                <Fingerprint size={20} />
-                Execution Results against Delta Table
-              </div>
+          {activeTab === 'results' && (
+            <StackLayout gap={2}>
+              <FlexLayout align="center" gap={1}>
+                <SearchIcon />
+                <Text styleAs="h3">Execution Results against Delta Table</Text>
+              </FlexLayout>
 
               {!results ? (
-                <div className="empty-state">
-                  <Database size={48} className="empty-icon" />
-                  <h3>No Results Yet</h3>
-                  <p>Run validation to see the BDQ evaluations.</p>
-                  <button className="btn btn-primary" style={{ marginTop: '1.5rem' }} onClick={() => setActiveTab('editor')}>
-                    Back to Editor
-                  </button>
-                </div>
+                <FlexLayout direction="column" align="center" justify="center" gap={2} style={{ padding: '3rem' }}>
+                  <DatabaseIcon size={2} />
+                  <Text styleAs="h3">No Results Yet</Text>
+                  <Text color="secondary">Run validation to see the BDQ evaluations.</Text>
+                  <Button appearance="bordered" onClick={() => setActiveTab('editor')}>Back to Editor</Button>
+                </FlexLayout>
               ) : (
-                <>
-                  <div className="summary-cards" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
-                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Execution Time</span>
-                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{executionSummary?.time} s</span>
-                    </div>
-                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Records Evaluated</span>
-                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{executionSummary?.evaluated}</span>
-                    </div>
-                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.3)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.85rem', color: 'var(--accent-success)' }}>Validation Passed</span>
-                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--accent-success)' }}>{executionSummary?.passed}</span>
-                    </div>
-                    <div className="summary-card" style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.3)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.85rem', color: 'var(--accent-danger)' }}>Validation Failed</span>
-                      <span style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--accent-danger)' }}>{executionSummary?.failed}</span>
-                    </div>
-                  </div>
+                <StackLayout gap={2}>
+                  {executionSummary && (
+                    <GridLayout columns={4} gap={1}>
+                      <Card variant="secondary">
+                        <StackLayout gap={0.5}>
+                          <Text styleAs="label" color="secondary">Total Execution Time</Text>
+                          <Text styleAs="h2">{executionSummary.time} s</Text>
+                        </StackLayout>
+                      </Card>
+                      <Card variant="secondary">
+                        <StackLayout gap={0.5}>
+                          <Text styleAs="label" color="secondary">Records Evaluated</Text>
+                          <Text styleAs="h2">{executionSummary.evaluated}</Text>
+                        </StackLayout>
+                      </Card>
+                      <Card variant="secondary" className="status-valid-bg">
+                        <StackLayout gap={0.5}>
+                          <Text styleAs="label" color="inherit">Validation Passed</Text>
+                          <Text styleAs="h2" color="inherit">{executionSummary.passed}</Text>
+                        </StackLayout>
+                      </Card>
+                      <Card variant="secondary" className="status-invalid-bg">
+                        <StackLayout gap={0.5}>
+                          <Text styleAs="label" color="inherit">Validation Failed</Text>
+                          <Text styleAs="h2" color="inherit">{executionSummary.failed}</Text>
+                        </StackLayout>
+                      </Card>
+                    </GridLayout>
+                  )}
 
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                  <Text color="secondary" styleAs="label">
                     Drools execution output for 10 limit rows against target table 5 column data.
-                  </p>
-                  <div className="table-container">
-                    <table>
+                  </Text>
+
+                  <div className="table-wrapper">
+                    <table className="salt-table">
                       <thead>
                         <tr>
                           <th>Record ID</th>
@@ -252,13 +296,13 @@ function App() {
                             <td>{row.price}</td>
                             <td>
                               {row.status === 'VALID' ? (
-                                <span className="status-badge status-valid">
-                                  <CheckCircle size={12} /> Valid
-                                </span>
+                                <FlexLayout align="center" gap={0.5} className="status-valid-text">
+                                  <SuccessSolidIcon /> Valid
+                                </FlexLayout>
                               ) : (
-                                <span className="status-badge status-invalid">
-                                  <AlertCircle size={12} /> Invalid
-                                </span>
+                                <FlexLayout align="center" gap={0.5} className="status-invalid-text">
+                                  <ErrorSolidIcon /> Invalid
+                                </FlexLayout>
                               )}
                             </td>
                           </tr>
@@ -266,104 +310,137 @@ function App() {
                       </tbody>
                     </table>
                   </div>
-                  <div className="actions-row">
-                    <button className="btn btn-secondary" onClick={() => setActiveTab('editor')}>
-                      View Editor
-                    </button>
-                    {isDevMode && (
-                      <button className="btn btn-success" onClick={handleOpenSaveModal}>
-                        <FileSpreadsheet size={18} />
-                        Save Rules & Export
-                      </button>
-                    )}
-                  </div>
-                </>
+
+                  <FlexLayout justify="end" gap={1}>
+                    <Button appearance="bordered" onClick={() => setActiveTab('editor')}>View Editor</Button>
+                    <Button appearance="solid" sentiment="accented" onClick={handleOpenSaveModal}>
+                      <SaveIcon />
+                      Save Rule
+                    </Button>
+                  </FlexLayout>
+                </StackLayout>
               )}
-            </div>
+            </StackLayout>
           )}
-        </div>
-      </main>
 
-      {/* Toast Notification */}
-      <div className={`toast ${showToast ? 'show' : ''}`}>
-        <CheckCircle size={20} className="toast-icon" />
-        <span>{toastMessage}</span>
-      </div>
+          {activeTab === 'rules' && (
+            <StackLayout gap={2}>
+              <FlexLayout align="center" gap={1}>
+                <DocumentIcon />
+                <Text styleAs="h3">Saved Rules Configuration</Text>
+              </FlexLayout>
+              <Text color="secondary" styleAs="label">
+                Manage business data quality rules. Developers can enable them and generate Databricks job bindings.
+              </Text>
 
-      {/* Save Rules Modal */}
-      {showSaveModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <Save size={24} className="header-icon" />
-              Save Rules to Master Table
-            </div>
-            <form onSubmit={handleSaveModalSubmit}>
-              <div className="form-group">
-                <label className="form-label">Rule Group Name</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  required
-                  value={ruleFormData.ruleGroupName}
-                  onChange={e => setRuleFormData({ ...ruleFormData, ruleGroupName: e.target.value })}
-                  placeholder="e.g., Sales Validation"
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Rule Name</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  required
-                  value={ruleFormData.ruleName}
-                  onChange={e => setRuleFormData({ ...ruleFormData, ruleName: e.target.value })}
-                  placeholder="e.g., Price Check"
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Target Table Name</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  required
-                  value={ruleFormData.targetTableName}
-                  onChange={e => setRuleFormData({ ...ruleFormData, targetTableName: e.target.value })}
-                  placeholder="e.g., sales_catalog.delta_table"
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Target Table Key Columns</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  required
-                  value={ruleFormData.targetKeyColumns}
-                  onChange={e => setRuleFormData({ ...ruleFormData, targetKeyColumns: e.target.value })}
-                  placeholder="e.g., product_id, region_id"
-                />
-              </div>
+              {savedRules.length === 0 ? (
+                <FlexLayout direction="column" align="center" justify="center" gap={2} style={{ padding: '3rem' }}>
+                  <DocumentIcon size={2} />
+                  <Text styleAs="h3">No Rules Configured</Text>
+                  <Text color="secondary">Save a rule from the SQL Editor to get started.</Text>
+                </FlexLayout>
+              ) : (
+                <div className="table-wrapper">
+                  <table className="salt-table">
+                    <thead>
+                      <tr>
+                        <th>Rule Group</th>
+                        <th>Rule Name</th>
+                        <th>Target Table</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {savedRules.map((rule) => (
+                        <tr key={rule.id}>
+                          <td>{rule.ruleGroupName}</td>
+                          <td>{rule.ruleName}</td>
+                          <td><Text styleAs="label">{rule.targetTableName}</Text></td>
+                          <td>
+                            {rule.status === 'Enabled' ? (
+                              <FlexLayout align="center" gap={0.5} className="status-valid-text">
+                                <SuccessSolidIcon /> Enabled
+                              </FlexLayout>
+                            ) : (
+                              <FlexLayout align="center" gap={0.5} style={{ color: 'var(--salt-color-orange-500)', fontWeight: 500 }}>
+                                <ErrorSolidIcon /> Pending
+                              </FlexLayout>
+                            )}
+                          </td>
+                          <td>
+                            <FlexLayout align="center" gap={1}>
+                              {rule.status === 'Pending' && (
+                                <Button
+                                  appearance="bordered"
+                                  sentiment="accented"
+                                  disabled={!isDevMode}
+                                  onClick={() => handleEnableRuleAndAttach(rule.id)}
+                                  title={!isDevMode ? "Enable Developer Mode to Attach Rule" : "Attach rule to Databricks job"}
+                                >
+                                  <PlaySolidIcon /> Enable & Attach
+                                </Button>
+                              )}
+                              {rule.status === 'Enabled' && (
+                                <Button appearance="transparent" sentiment="neutral" onClick={() => generateJobsYml(rule)}>
+                                  <ExportIcon /> Download jobs.yml
+                                </Button>
+                              )}
+                            </FlexLayout>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </StackLayout>
+          )}
+        </FlexLayout>
+      </Card>
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={handleCloseSaveModal}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Save & Export Excel
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {/* Toast */}
+      {showToast && (
+        <Card className="app-toast" variant="secondary">
+          <FlexLayout align="center" gap={1}>
+            <SuccessSolidIcon />
+            <Text>{toastMessage}</Text>
+          </FlexLayout>
+        </Card>
       )}
 
-      <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(5px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-    </div>
+      {/* Save Rules Modal */}
+      <Dialog open={showSaveModal}>
+        <DialogHeader header="Save Rule Definition" />
+        <DialogContent>
+          <StackLayout gap={2}>
+            <Text color="secondary" styleAs="label" style={{ marginBottom: '1rem' }}>
+              Business users can save this rule as pending. A developer must later review and enable it to attach to the Databricks production jobs.
+            </Text>
+            <FormField>
+              <FormFieldLabel>Rule Group Name</FormFieldLabel>
+              <Input value={ruleFormData.ruleGroupName} onChange={(e: any) => setRuleFormData({ ...ruleFormData, ruleGroupName: e.target.value })} placeholder="e.g., Sales Validation" />
+            </FormField>
+            <FormField>
+              <FormFieldLabel>Rule Name</FormFieldLabel>
+              <Input value={ruleFormData.ruleName} onChange={(e: any) => setRuleFormData({ ...ruleFormData, ruleName: e.target.value })} placeholder="e.g., Price Check" />
+            </FormField>
+            <FormField>
+              <FormFieldLabel>Target Table Name</FormFieldLabel>
+              <Input value={ruleFormData.targetTableName} onChange={(e: any) => setRuleFormData({ ...ruleFormData, targetTableName: e.target.value })} placeholder="e.g., sales_catalog.delta_table" />
+            </FormField>
+            <FormField>
+              <FormFieldLabel>Target Key Columns</FormFieldLabel>
+              <Input value={ruleFormData.targetKeyColumns} onChange={(e: any) => setRuleFormData({ ...ruleFormData, targetKeyColumns: e.target.value })} placeholder="e.g., product_id, region_id" />
+            </FormField>
+          </StackLayout>
+        </DialogContent>
+        <DialogActions>
+          <Button appearance="bordered" onClick={handleCloseSaveModal}>Cancel</Button>
+          <Button appearance="solid" sentiment="accented" onClick={handleSaveModalSubmit}>Save as Pending</Button>
+        </DialogActions>
+      </Dialog>
+    </StackLayout>
   );
 }
 
